@@ -26,6 +26,7 @@
  */
 
 #include "storage.h"
+#include "ta_storage.h"
 
 #include <tee_api.h>
 #include <trace.h>
@@ -38,10 +39,12 @@ do { \
 
 #define VAL2HANDLE(v) (void *)(uintptr_t)(v)
 
-TEE_Result ta_storage_cmd_open(uint32_t param_types, TEE_Param params[4])
+TEE_Result ta_storage_cmd_open(uint32_t command,
+				uint32_t param_types, TEE_Param params[4])
 {
 	TEE_Result res;
 	TEE_ObjectHandle o;
+	void *object_id;
 
 	ASSERT_PARAM_TYPE(TEE_PARAM_TYPES
 			  (TEE_PARAM_TYPE_MEMREF_INPUT,
@@ -49,19 +52,41 @@ TEE_Result ta_storage_cmd_open(uint32_t param_types, TEE_Param params[4])
 			   TEE_PARAM_TYPE_VALUE_INPUT,
 			   TEE_PARAM_TYPE_NONE));
 
+	switch (command) {
+	case TA_STORAGE_CMD_OPEN:
+		object_id = TEE_Malloc(params[0].memref.size, 0);
+		if (!object_id)
+			return TEE_ERROR_OUT_OF_MEMORY;
+
+		TEE_MemMove(object_id, params[0].memref.buffer,
+			    params[0].memref.size);
+		break;
+	case TA_STORAGE_CMD_OPEN_ID_IN_SHM:
+		object_id = params[0].memref.buffer;
+		break;
+	default:
+		return TEE_ERROR_NOT_SUPPORTED;
+	}
+
 	res = TEE_OpenPersistentObject(params[2].value.a,
-					params[0].memref.buffer,
-					params[0].memref.size,
+					object_id, params[0].memref.size,
 					params[1].value.a, &o);
 
 	params[1].value.b = (uintptr_t)o;
+
+	if (command == TA_STORAGE_CMD_OPEN)
+		TEE_Free(object_id);
+
 	return res;
 }
 
-TEE_Result ta_storage_cmd_create(uint32_t param_types, TEE_Param params[4])
+TEE_Result ta_storage_cmd_create(uint32_t command,
+				 uint32_t param_types, TEE_Param params[4])
 {
 	TEE_Result res;
 	TEE_ObjectHandle o;
+	void *object_id;
+	TEE_ObjectHandle ref_handle;
 
 	ASSERT_PARAM_TYPE(TEE_PARAM_TYPES
 			  (TEE_PARAM_TYPE_MEMREF_INPUT,
@@ -69,19 +94,44 @@ TEE_Result ta_storage_cmd_create(uint32_t param_types, TEE_Param params[4])
 			   TEE_PARAM_TYPE_VALUE_INPUT,
 			   TEE_PARAM_TYPE_MEMREF_INPUT));
 
+	switch (command) {
+	case TA_STORAGE_CMD_CREATE:
+		object_id = TEE_Malloc(params[0].memref.size, 0);
+		if (!object_id)
+			return TEE_ERROR_OUT_OF_MEMORY;
+
+		TEE_MemMove(object_id, params[0].memref.buffer,
+			    params[0].memref.size);
+		break;
+	case TA_STORAGE_CMD_CREATE_ID_IN_SHM:
+		object_id = params[0].memref.buffer;
+		break;
+	default:
+		return TEE_ERROR_NOT_SUPPORTED;
+	}
+
+	ref_handle = (TEE_ObjectHandle)(uintptr_t)params[2].value.a;
+
 	res = TEE_CreatePersistentObject(params[2].value.b,
-		 params[0].memref.buffer, params[0].memref.size,
-		 params[1].value.a,
-		 (TEE_ObjectHandle)(uintptr_t)params[2].value.a,
-		 params[3].memref.buffer, params[3].memref.size, &o);
+					 object_id, params[0].memref.size,
+					 params[1].value.a, ref_handle,
+					 params[3].memref.buffer,
+					 params[3].memref.size, &o);
+
+	if (command == TA_STORAGE_CMD_CREATE)
+		TEE_Free(object_id);
+
 	params[1].value.b = (uintptr_t)o;
+
 	return res;
 }
 
-TEE_Result ta_storage_cmd_create_overwrite(uint32_t param_types,
+TEE_Result ta_storage_cmd_create_overwrite(uint32_t command,
+					   uint32_t param_types,
 					   TEE_Param params[4])
 {
 	TEE_Result res;
+	void *object_id;
 
 	ASSERT_PARAM_TYPE(TEE_PARAM_TYPES
 			  (TEE_PARAM_TYPE_MEMREF_INPUT,
@@ -89,10 +139,30 @@ TEE_Result ta_storage_cmd_create_overwrite(uint32_t param_types,
 			   TEE_PARAM_TYPE_NONE,
 			   TEE_PARAM_TYPE_NONE));
 
+	switch (command) {
+	case TA_STORAGE_CMD_CREATE_OVERWRITE:
+		object_id = TEE_Malloc(params[0].memref.size, 0);
+		if (!object_id)
+			return TEE_ERROR_OUT_OF_MEMORY;
+
+		TEE_MemMove(object_id, params[0].memref.buffer,
+			    params[0].memref.size);
+		break;
+	case TA_STORAGE_CMD_CREATEOVER_ID_IN_SHM:
+		object_id = params[0].memref.buffer;
+		break;
+	default:
+		return TEE_ERROR_NOT_SUPPORTED;
+	}
+
 	res = TEE_CreatePersistentObject(params[1].value.a,
-		 params[0].memref.buffer, params[0].memref.size,
-		 TEE_DATA_FLAG_OVERWRITE,
-		 NULL, NULL, 0, NULL);
+					 object_id, params[0].memref.size,
+					 TEE_DATA_FLAG_OVERWRITE,
+					 NULL, NULL, 0, NULL);
+
+	if (command == TA_STORAGE_CMD_CREATE_OVERWRITE)
+		TEE_Free(object_id);
+
 	return res;
 }
 
@@ -169,17 +239,40 @@ TEE_Result ta_storage_cmd_unlink(uint32_t param_types, TEE_Param params[4])
 	return TEE_SUCCESS;
 }
 
-TEE_Result ta_storage_cmd_rename(uint32_t param_types, TEE_Param params[4])
+TEE_Result ta_storage_cmd_rename(uint32_t command, uint32_t param_types,
+				 TEE_Param params[4])
 {
 	TEE_ObjectHandle o = VAL2HANDLE(params[0].value.a);
+	void *object_id;
+	TEE_Result res;
 
 	ASSERT_PARAM_TYPE(TEE_PARAM_TYPES
 			  (TEE_PARAM_TYPE_VALUE_INPUT,
 			   TEE_PARAM_TYPE_MEMREF_INPUT, TEE_PARAM_TYPE_NONE,
 			   TEE_PARAM_TYPE_NONE));
 
-	return TEE_RenamePersistentObject(o, params[1].memref.buffer,
-					  params[1].memref.size);
+	switch (command) {
+	case TA_STORAGE_CMD_RENAME:
+		object_id = TEE_Malloc(params[1].memref.size, 0);
+		if (!object_id)
+			return TEE_ERROR_OUT_OF_MEMORY;
+
+		TEE_MemMove(object_id, params[1].memref.buffer,
+			    params[1].memref.size);
+		break;
+	case TA_STORAGE_CMD_RENAME_ID_IN_SHM:
+		object_id = params[1].memref.buffer;
+		break;
+	default:
+		return TEE_ERROR_NOT_SUPPORTED;
+	}
+
+	res = TEE_RenamePersistentObject(o, object_id, params[1].memref.size);
+
+	if (command == TA_STORAGE_CMD_RENAME)
+		TEE_Free(object_id);
+
+	return res;
 }
 
 TEE_Result ta_storage_cmd_trunc(uint32_t param_types, TEE_Param params[4])

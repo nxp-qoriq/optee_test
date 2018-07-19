@@ -20,12 +20,19 @@
 #include <string.h>
 #include <unistd.h>
 
+#ifdef OPENSSL_FOUND
+#include <openssl/crypto.h>
+#include <openssl/err.h>
+#include <openssl/evp.h>
+#endif
+
 #include <adbg.h>
 #include "xtest_test.h"
 #include "xtest_helpers.h"
 
 /* include here shandalone tests */
 #include "crypto_common.h"
+#include "install_ta.h"
 
 
 ADBG_SUITE_DEFINE(benchmark);
@@ -65,10 +72,23 @@ void usage(char *program)
 	printf("applets:\n");
 	printf("\t--sha-perf [opts]  SHA performance testing tool (-h for usage)\n");
 	printf("\t--aes-perf [opts]  AES performance testing tool (-h for usage)\n");
+#ifdef CFG_SECSTOR_TA_MGMT_PTA
+	printf("\t--install-ta [directory or list of TAs]\n");
+	printf("\t                   Install TAs\n");
+#endif
 #ifdef CFG_SECURE_DATA_PATH
 	printf("\t--sdp-basic [opts] Basic Secure Data Path test setup ('-h' for usage)\n");
 #endif
 	printf("\n");
+}
+
+static void init_ossl(void)
+{
+#ifdef OPENSSL_FOUND
+	OPENSSL_init();
+	OpenSSL_add_all_algorithms();
+	ERR_load_crypto_strings();
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -91,10 +111,16 @@ int main(int argc, char *argv[])
 	if (signal(SIGHUP, SIG_IGN) == SIG_ERR)
 		warn("signal(SIGPIPE, SIG_IGN)");
 
+	init_ossl();
+
 	if (argc > 1 && !strcmp(argv[1], "--sha-perf"))
 		return sha_perf_runner_cmd_parser(argc-1, &argv[1]);
 	else if (argc > 1 && !strcmp(argv[1], "--aes-perf"))
 		return aes_perf_runner_cmd_parser(argc-1, &argv[1]);
+#ifdef CFG_SECSTOR_TA_MGMT_PTA
+	else if (argc > 1 && !strcmp(argv[1], "--install-ta"))
+		return install_ta_runner_cmd_parser(argc - 1, argv + 1);
+#endif
 #ifdef CFG_SECURE_DATA_PATH
 	else if (argc > 1 && !strcmp(argv[1], "--sdp-basic"))
 		return sdp_basic_runner_cmd_parser(argc-1, &argv[1]);

@@ -8,14 +8,19 @@ ifeq ($(out-dir),)
 $(error invalid output directory (O=$(O)))
 endif
 
-include $(TA_DEV_KIT_DIR)/host_include/conf.mk
+include $(TA_DEV_KIT_DIR)/mk/conf.mk
 
 # Prevent use of LDFLAGS from the environment. For example, yocto exports
 # LDFLAGS that are suitable for the client applications, not for TAs
 LDFLAGS=
 
+ifeq ($(CFG_TA_DYNLINK),y)
+OS_TEST_LIB := os_test_lib
+endif
+
 TA_DIRS := create_fail_test \
 	   crypt \
+	   $(OS_TEST_LIB) \
 	   os_test \
 	   rpc_test \
 	   sims \

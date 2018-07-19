@@ -24,6 +24,22 @@ OBJCOPY		?= $(CROSS_COMPILE)objcopy
 OBJDUMP		?= $(CROSS_COMPILE)objdump
 READELF		?= $(CROSS_COMPILE)readelf
 
+# OpenSSL is used by GP tests series 8500 and Mbed TLS test 8103
+ifneq ($(CFG_GP_PACKAGE_PATH)$(filter y,$(CFG_TA_MBEDTLS)),)
+CFLAGS += -DOPENSSL_FOUND=1
+ifneq ($(OPTEE_OPENSSL_EXPORT),)
+LDFLAGS += -lcrypto
+CFLAGS += -I$(OPTEE_OPENSSL_EXPORT)
+else #OPTEE_OPENSSL_EXPORT
+CFLAGS += -I../openssl/include
+ifeq ($(COMPILE_NS_USER),32)
+LDFLAGS += ../openssl/lib/arm/libcrypto.a -ldl
+else
+LDFLAGS += ../openssl/lib/aarch64/libcrypto.a -ldl
+endif
+endif #OPTEE_OPENSSL_EXPORT
+endif #require OpenSSL
+
 srcs := regression_1000.c
 
 ifeq ($(CFG_GP_SOCKETS),y)
@@ -46,11 +62,15 @@ srcs +=	adbg/src/adbg_case.c \
 	regression_6000.c \
 	regression_7000.c \
 	regression_8000.c \
-	regression_9000.c \
+	regression_8100.c \
 	sha_perf.c \
 	xtest_helpers.c \
 	xtest_main.c \
 	xtest_test.c
+
+ifeq ($(CFG_SECSTOR_TA_MGMT_PTA),y)
+srcs += install_ta.c
+endif
 
 ifeq ($(CFG_SECURE_DATA_PATH),y)
 srcs += sdp_basic.c
@@ -71,17 +91,18 @@ objs 	:= $(patsubst %.c,$(out-dir)/xtest/%.o, $(srcs))
 CFLAGS += -I./
 CFLAGS += -I./adbg/include
 CFLAGS += -I./xml/include
+CFLAGS += -I$(out-dir)/xtest
 
 CFLAGS += -I$(OPTEE_CLIENT_EXPORT)/include
 CFLAGS += -I$(TA_DEV_KIT_DIR)/host_include
 
+CFLAGS += -I../../ta/include
 CFLAGS += -I../../ta/create_fail_test/include
 CFLAGS += -I../../ta/crypt/include
 CFLAGS += -I../../ta/enc_fs/include
 CFLAGS += -I../../ta/os_test/include
 CFLAGS += -I../../ta/rpc_test/include
 CFLAGS += -I../../ta/sims/include
-CFLAGS += -I../../ta/storage/include
 CFLAGS += -I../../ta/storage_benchmark/include
 CFLAGS += -I../../ta/concurrent/include
 CFLAGS += -I../../ta/concurrent_large/include
@@ -106,20 +127,12 @@ CFLAGS += -I../../ta/GP_TTA_answerSuccessTo_OpenSession_Invoke
 CFLAGS += -I../../ta/GP_TTA_check_OpenSession_with_4_parameters
 CFLAGS += -I../../ta/GP_TTA_testingClientAPI
 
-# need more include: openssl
-CFLAGS += -Ifor_gp/include
 
 # by default, the client application is compiled as the kernel of optee-os
 ifeq ($(CFG_ARM32_core),y)
 COMPILE_NS_USER ?= 32
 else
 COMPILE_NS_USER ?= 64
-endif
-
-ifeq ($(COMPILE_NS_USER),32)
-LDFLAGS += ../lib/armv7/libcrypto.a
-else
-LDFLAGS += ../lib/armv8/libcrypto.a
 endif
 
 endif
@@ -152,7 +165,7 @@ all: xtest
 
 xtest: $(objs)
 	@echo "  LD      $(out-dir)/xtest/$@"
-	$(q)@$(CC) -o $(out-dir)/xtest/$@ $+ $(LDFLAGS)
+	$(q)$(CC) -o $(out-dir)/xtest/$@ $+ $(LDFLAGS)
 
 $(out-dir)/xtest/%.o: $(CURDIR)/%.c
 	$(q)mkdir -p $(out-dir)/xtest/adbg/src
@@ -166,9 +179,58 @@ define rm-build-dirs
 	$(q)$(RMDIR) $(out-dir) 2> /dev/null; true
 endef
 
+ifeq ($(CFG_GCM_NIST_VECTORS),y)
+GCM_NIST_VECTORS_DECRYPT = gcmDecrypt128 gcmDecrypt192 gcmDecrypt256
+GCM_NIST_VECTORS_ENCRYPT = gcmEncryptExtIV128 gcmEncryptExtIV192 \
+			   gcmEncryptExtIV256
+
+cleanfiles += $(out-dir)/gcmtestvectors.zip
+$(out-dir)/gcmtestvectors.zip:
+	@echo '  DL      $@'
+	$(q)curl https://csrc.nist.gov/csrc/media/projects/cryptographic-algorithm-validation-program/documents/mac/gcmtestvectors.zip -o $@
+
+define create-nist-gcm-vectors
+cleanfiles += $(out-dir)/xtest/$(1).h $(out-dir)/$(1).rsp
+
+$(out-dir)/$(1).rsp: $(out-dir)/gcmtestvectors.zip
+	@echo '  UNZIP   $$@'
+	$(q)unzip -o $$< $$(notdir $$@) -d $$(dir $$@)
+	$(q)touch $$@
+
+
+$(out-dir)/xtest/$(1).h: $(out-dir)/$(1).rsp
+	@echo '  GEN     $$@'
+	$(q)../../scripts/rsp_to_gcm_test.py --inf $$< --outf $$@ --mode=$(2) \
+		$(if $(filter y,$(CFG_GCM_NIST_VECTORS_LIMITED)),--limited)
+
+$(CURDIR)/regression_4000.c: $(out-dir)/xtest/$(1).h
+endef
+
+$(foreach v, $(GCM_NIST_VECTORS_DECRYPT), $(eval $(call \
+	create-nist-gcm-vectors,$v,decrypt)))
+$(foreach v, $(GCM_NIST_VECTORS_ENCRYPT), $(eval $(call \
+	create-nist-gcm-vectors,$v,encrypt)))
+endif
+
+define embed-file
+cleanfiles += $(out-dir)/xtest/$(1).h
+
+$(out-dir)/xtest/$(1).h: $(2)
+	@echo '  GEN     $$@'
+	$(q)../../scripts/file_to_c.py --inf $$< --out $$@ --name $(1)
+
+$(CURDIR)/regression_8100.c: $(out-dir)/xtest/$(1).h
+endef
+
+$(eval $(call embed-file,regression_8100_ca_crt,../../cert/ca.crt))
+$(eval $(call embed-file,regression_8100_mid_crt,../../cert/mid.crt))
+$(eval $(call embed-file,regression_8100_my_crt,../../cert/my.crt))
+$(eval $(call embed-file,regression_8100_my_csr,../../cert/my.csr))
+
 .PHONY: clean
 clean:
 	@echo '  CLEAN $(out-dir)'
 	$(q)rm -f $(out-dir)/xtest/xtest
 	$(q)$(foreach obj,$(objs), rm -f $(obj))
+	$(q)rm -f $(cleanfiles)
 	$(call rm-build-dirs,adbg/src adbg)

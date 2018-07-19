@@ -15,6 +15,7 @@
 #include <string.h>
 #include <inttypes.h>
 #include <malloc.h>
+#include <time.h>
 
 #include "xtest_test.h"
 #include "xtest_helpers.h"
@@ -31,8 +32,7 @@
 
 static void xtest_tee_test_4001(ADBG_Case_t *Case_p);
 static void xtest_tee_test_4002(ADBG_Case_t *Case_p);
-static void xtest_tee_test_4003_no_xts(ADBG_Case_t *Case_p);
-static void xtest_tee_test_4003_xts(ADBG_Case_t *Case_p);
+static void xtest_tee_test_4003(ADBG_Case_t *Case_p);
 static void xtest_tee_test_4004(ADBG_Case_t *Case_p);
 static void xtest_tee_test_4005(ADBG_Case_t *Case_p);
 static void xtest_tee_test_4006(ADBG_Case_t *Case_p);
@@ -41,15 +41,16 @@ static void xtest_tee_test_4008(ADBG_Case_t *Case_p);
 static void xtest_tee_test_4009(ADBG_Case_t *Case_p);
 static void xtest_tee_test_4010(ADBG_Case_t *Case_p);
 static void xtest_tee_test_4011(ADBG_Case_t *Case_p);
+#ifdef CFG_SYSTEM_PTA
+static void xtest_tee_test_4012(ADBG_Case_t *Case_p);
+#endif
 
 ADBG_CASE_DEFINE(regression, 4001, xtest_tee_test_4001,
 		"Test TEE Internal API hash operations");
 ADBG_CASE_DEFINE(regression, 4002, xtest_tee_test_4002,
 		"Test TEE Internal API MAC operations");
-ADBG_CASE_DEFINE(regression, 4003_NO_XTS, xtest_tee_test_4003_no_xts,
-		"Test TEE Internal API cipher operations without AES XTS");
-ADBG_CASE_DEFINE(regression, 4003_XTS, xtest_tee_test_4003_xts,
-		"Test TEE Internal API cipher operations for AES XTS");
+ADBG_CASE_DEFINE(regression, 4003, xtest_tee_test_4003,
+		"Test TEE Internal API cipher operations");
 ADBG_CASE_DEFINE(regression, 4004, xtest_tee_test_4004,
 		"Test TEE Internal API get random");
 ADBG_CASE_DEFINE(regression, 4005, xtest_tee_test_4005,
@@ -66,6 +67,10 @@ ADBG_CASE_DEFINE(regression, 4010, xtest_tee_test_4010,
 		"Test TEE Internal API create transient object (negative)");
 ADBG_CASE_DEFINE(regression, 4011, xtest_tee_test_4011,
 		"Test TEE Internal API Bleichenbacher attack (negative)");
+#ifdef CFG_SYSTEM_PTA
+ADBG_CASE_DEFINE(regression, 4012, xtest_tee_test_4012,
+		"Test seeding RNG entropy");
+#endif
 
 static TEEC_Result ta_crypt_cmd_random_number_generate(ADBG_Case_t *c,
 						       TEEC_Session *s,
@@ -1726,10 +1731,14 @@ out:
 	TEEC_CloseSession(&session);
 }
 
-/* generated with scripts/crypt_aes_cbc_nopad.pl */
 static const uint8_t ciph_data_aes_key1[] = {
 	0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, /* 01234567 */
 	0x38, 0x39, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, /* 89ABCDEF */
+};
+
+static const uint8_t ciph_data_aes_key2[] = {
+	0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
+	0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02, 0x02,
 };
 
 static const uint8_t ciph_data_des_key1[] = {
@@ -1776,9 +1785,39 @@ static const uint8_t ciph_data_in3[] = {
 	0x43, 0x44, 0x45, 0x46, 0x30,                   /* CDEF0    */
 };
 
+static const uint8_t ciph_data_in4[] = {
+	0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, /* 23456789 */
+	0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x30, 0x31, /* ABCDEF01 */
+	0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x41, /* 3456789A */
+	0x42, 0x43, 0x44, 0x45, 0x46, 0x30, 0x31, 0x32, /* BCDEF012 */
+	0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x41, 0x42, /* 456789AB */
+	0x43, 0x44, 0x45, 0x46, 0x30, 0x31, 0x32, 0x33, /* CDEF0123 */
+	0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, /* 01234567 */
+	0x38, 0x39, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, /* 89ABCDEF */
+};
+
+static const uint8_t ciph_data_in5[] = {
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+	0x01, 0x01, 0x01
+};
+
 static const uint8_t ciph_data_128_iv1[] = {
 	0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, /* 12345678 */
 	0x39, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x30, /* 9ABCDEF0 */
+};
+
+static const uint8_t ciph_data_128_iv2[] = {
+	0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
+	0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03, 0x03,
 };
 
 static const uint8_t ciph_data_64_iv1[] = {
@@ -1823,6 +1862,31 @@ static const uint8_t ciph_data_aes_ctr_out2[] = {
 	0x24, 0x15, 0x70, 0x7F, 0x47, 0x37, 0x69, 0xE0, /* $.p.G7i. */
 	0x24, 0xC3, 0x29, 0xCD, 0xF2, 0x26, 0x69, 0xFF, /* $.)..&i. */
 	0x72, 0x0E, 0x3C, 0xD1, 0xA1,                   /* r.<..    */
+};
+
+static const uint8_t ciph_data_aes_ctr_out4[] = {
+	0xD2, 0xDD, 0x11, 0xA8, 0xF7, 0xB0, 0xAE, 0x55, /* .......U */
+	0xBE, 0x61, 0x7A, 0xE6, 0xA1, 0x6C, 0x79, 0xF4, /* .az..ly. */
+	0x62, 0x51, 0x7B, 0xE9, 0x7C, 0xA0, 0x31, 0x0C, /* bQ{.|.1. */
+	0x24, 0x15, 0x70, 0x7F, 0x47, 0x37, 0x69, 0xE0, /* $.p.G7i. */
+	0x24, 0xC3, 0x29, 0xCD, 0xF2, 0x26, 0x69, 0xFF, /* $.)..&i. */
+	0x72, 0x0E, 0x3C, 0xD1, 0xA1, 0x2F, 0x5D, 0x33, /* r.<../]3 */
+	0x9F, 0xD7, 0x0C, 0x92, 0xD4, 0xA5, 0x9D, 0x06, /* ........ */
+	0x01, 0x80, 0x38, 0xCD, 0xC2, 0x71, 0x5D, 0x4A, /* ..8..q]J */
+};
+
+static const uint8_t ciph_data_aes_ctr_out5[] = {
+	0xbb, 0xfe, 0x07, 0x04, 0x1c, 0x8e, 0x09, 0x61,
+	0xfb, 0xb1, 0x7c, 0xa5, 0x4d, 0x2b, 0x30, 0xf6,
+	0x26, 0x9e, 0xff, 0x61, 0x18, 0x47, 0xc6, 0x06,
+	0x81, 0x02, 0x84, 0xcd, 0x9c, 0x4b, 0x6d, 0x21,
+	0xe2, 0x64, 0xa6, 0x50, 0x7f, 0x28, 0x81, 0x6f,
+	0x29, 0xda, 0xd5, 0x56, 0x3f, 0x46, 0xac, 0xca,
+	0x37, 0xe7, 0x77, 0x36, 0xbc, 0x76, 0x39, 0x57,
+	0xaa, 0x67, 0x1b, 0x2a, 0xe6, 0x36, 0x57, 0x6d,
+	0x2a, 0xb8, 0x77, 0x41, 0xc2, 0x4e, 0x4f, 0x27,
+	0x4c, 0x34, 0x7a, 0x01, 0x6a, 0xda, 0x75, 0x75,
+	0x3e, 0x68, 0xb2
 };
 
 static const uint8_t ciph_data_aes_cbc_vect1_key[] = {
@@ -2194,8 +2258,21 @@ static const struct xtest_ciph_case ciph_cases[] = {
 			ciph_data_aes_key1, ciph_data_128_iv1, 13,
 			ciph_data_in3,
 			ciph_data_aes_ctr_out2),
+	XTEST_CIPH_CASE(TEE_ALG_AES_CTR, TEE_TYPE_AES,
+			ciph_data_aes_key1, ciph_data_128_iv1, 16,
+			ciph_data_in3,
+			ciph_data_aes_ctr_out2),
+	XTEST_CIPH_CASE(TEE_ALG_AES_CTR, TEE_TYPE_AES,
+			ciph_data_aes_key1, ciph_data_128_iv1, 16,
+			ciph_data_in4,
+			ciph_data_aes_ctr_out4),
+	XTEST_CIPH_CASE(TEE_ALG_AES_CTR, TEE_TYPE_AES,
+			ciph_data_aes_key2, ciph_data_128_iv2, 11,
+			ciph_data_in5,
+			ciph_data_aes_ctr_out5),
 
 	XTEST_CIPH_CASE_AES_CBC(vect1, 11),
+	XTEST_CIPH_CASE_AES_CBC(vect1, 64),
 
 	/* AES-CTS */
 	XTEST_CIPH_CASE_AES_CTS(vect1, 13),
@@ -2238,9 +2315,7 @@ static const struct xtest_ciph_case ciph_cases[] = {
 			ciph_data_des2_key1, ciph_data_64_iv1, 11,
 			ciph_data_in1,
 			ciph_data_des2_cbc_nopad_out1),
-};
 
-static const struct xtest_ciph_case ciph_cases_xts[] = {
 	/* AES-XTS */
 	XTEST_CIPH_CASE_AES_XTS(vect1, 3),
 	XTEST_CIPH_CASE_AES_XTS(vect2, 6),
@@ -2263,7 +2338,7 @@ static const struct xtest_ciph_case ciph_cases_xts[] = {
 	XTEST_CIPH_CASE_AES_XTS(vect19, 23),
 };
 
-static void xtest_tee_test_4003_no_xts(ADBG_Case_t *c)
+static void xtest_tee_test_4003(ADBG_Case_t *c)
 {
 	TEEC_Session session = { 0 };
 	TEE_OperationHandle op;
@@ -2405,158 +2480,6 @@ out:
 	TEEC_CloseSession(&session);
 }
 
-/*
- * This is a split of the original xtest 4003 as eary version of the ST TEE.
- *
- * Core did not support xts.
- */
-static void xtest_tee_test_4003_xts(ADBG_Case_t *c)
-{
-	TEEC_Session session = { 0 };
-	TEE_OperationHandle op;
-	TEE_ObjectHandle key1_handle = TEE_HANDLE_NULL;
-	TEE_ObjectHandle key2_handle = TEE_HANDLE_NULL;
-	uint8_t out[2048];
-	size_t out_size;
-	size_t out_offs;
-	uint32_t ret_orig;
-	size_t n;
-
-	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-		xtest_teec_open_session(&session, &crypt_user_ta_uuid, NULL,
-					&ret_orig)))
-		return;
-
-	for (n = 0; n < ARRAY_SIZE(ciph_cases_xts); n++) {
-		TEE_Attribute key_attr;
-		size_t key_size;
-		size_t op_key_size;
-
-		Do_ADBG_BeginSubCase(c, "Cipher case %d algo 0x%x line %d",
-				     (int)n,
-				     (unsigned int)ciph_cases_xts[n].algo,
-				     (int)ciph_cases_xts[n].line);
-
-		key_attr.attributeID = TEE_ATTR_SECRET_VALUE;
-		key_attr.content.ref.buffer = (void *)ciph_cases_xts[n].key1;
-		key_attr.content.ref.length = ciph_cases_xts[n].key1_len;
-
-		key_size = key_attr.content.ref.length * 8;
-		if (ciph_cases_xts[n].key_type == TEE_TYPE_DES ||
-		    ciph_cases_xts[n].key_type == TEE_TYPE_DES3)
-			/* Exclude parity in bit size of key */
-			key_size -= key_size / 8;
-
-		op_key_size = key_size;
-		if (ciph_cases_xts[n].key2 != NULL)
-			op_key_size *= 2;
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_allocate_operation(c, &session, &op,
-				ciph_cases_xts[n].algo, ciph_cases_xts[n].mode,
-				op_key_size)))
-			goto out;
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_allocate_transient_object(c, &session,
-				ciph_cases_xts[n].key_type, key_size,
-				&key1_handle)))
-			goto out;
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_populate_transient_object(c, &session,
-				key1_handle, &key_attr, 1)))
-			goto out;
-
-		if (ciph_cases_xts[n].key2 != NULL) {
-			key_attr.content.ref.buffer =
-				(void *)ciph_cases_xts[n].key2;
-
-			key_attr.content.ref.length =
-				ciph_cases_xts[n].key2_len;
-
-			if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-				ta_crypt_cmd_allocate_transient_object(c,
-					&session, ciph_cases_xts[n].key_type,
-					key_attr.content.ref.length * 8,
-					&key2_handle)))
-				goto out;
-
-			if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-				ta_crypt_cmd_populate_transient_object(c,
-					&session, key2_handle, &key_attr, 1)))
-				goto out;
-
-			if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-				ta_crypt_cmd_set_operation_key2(c, &session, op,
-					key1_handle, key2_handle)))
-				goto out;
-		} else {
-			if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-				ta_crypt_cmd_set_operation_key(c, &session, op,
-					key1_handle)))
-				goto out;
-		}
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_free_transient_object(c, &session,
-				key1_handle)))
-			goto out;
-
-		key1_handle = TEE_HANDLE_NULL;
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_free_transient_object(c, &session,
-				key2_handle)))
-			goto out;
-
-		key2_handle = TEE_HANDLE_NULL;
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c, ta_crypt_cmd_cipher_init(c,
-				  &
-				  session,
-				  op,
-				  ciph_cases_xts
-		[n].iv, ciph_cases_xts[n].iv_len)))
-			goto out;
-
-		out_offs = 0;
-		out_size = sizeof(out);
-		memset(out, 0, sizeof(out));
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_cipher_update(c, &session, op,
-				ciph_cases_xts[n].in, ciph_cases_xts[n].in_incr,
-				out, &out_size)))
-			goto out;
-
-		out_offs += out_size;
-		out_size = sizeof(out) - out_offs;
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_cipher_do_final(c, &session, op,
-				ciph_cases_xts[n].in +
-					ciph_cases_xts[n].in_incr,
-				ciph_cases_xts[n].in_len -
-					ciph_cases_xts[n].in_incr,
-				out + out_offs,
-				&out_size)))
-			goto out;
-		out_offs += out_size;
-
-		(void)ADBG_EXPECT_BUFFER(c, ciph_cases_xts[n].out,
-					 ciph_cases_xts[n].out_len, out,
-					 out_offs);
-
-		if (!ADBG_EXPECT_TEEC_SUCCESS(c,
-			ta_crypt_cmd_free_operation(c, &session, op)))
-			goto out;
-
-		Do_ADBG_EndSubCase(c, NULL);
-	}
-out:
-	TEEC_CloseSession(&session);
-}
-
 static void xtest_tee_test_4004(ADBG_Case_t *c)
 {
 	TEEC_Session session = { 0 };
@@ -2654,8 +2577,8 @@ static const struct xtest_ae_case ae_cases[] = {
 	XTEST_AE_CASE_AES_GCM(vect1, 0, 0, NULL_ARRAY, NULL_ARRAY, NULL_ARRAY),
 	XTEST_AE_CASE_AES_GCM(vect2, 0, 9, NULL_ARRAY, ARRAY, ARRAY),
 	XTEST_AE_CASE_AES_GCM(vect3, 0, 9, NULL_ARRAY, ARRAY, ARRAY),
-	XTEST_AE_CASE_AES_GCM(vect3, 0, 0x20, NULL_ARRAY, ARRAY, ARRAY),
-	XTEST_AE_CASE_AES_GCM(vect4, 5, 9, ARRAY, ARRAY, ARRAY),
+	XTEST_AE_CASE_AES_GCM(vect3, 0, 0x1F, NULL_ARRAY, ARRAY, ARRAY),
+	XTEST_AE_CASE_AES_GCM(vect4, 5, 0x20, ARRAY, ARRAY, ARRAY),
 	XTEST_AE_CASE_AES_GCM(vect5, 5, 9, ARRAY, ARRAY, ARRAY),
 	XTEST_AE_CASE_AES_GCM(vect6, 5, 9, ARRAY, ARRAY, ARRAY),
 	XTEST_AE_CASE_AES_GCM(vect7, 0, 0, NULL_ARRAY, NULL_ARRAY, NULL_ARRAY),
@@ -2670,6 +2593,14 @@ static const struct xtest_ae_case ae_cases[] = {
 	XTEST_AE_CASE_AES_GCM(vect16, 5, 9, ARRAY, ARRAY, ARRAY),
 	XTEST_AE_CASE_AES_GCM(vect17, 5, 9, ARRAY, ARRAY, ARRAY),
 	XTEST_AE_CASE_AES_GCM(vect18, 5, 9, ARRAY, ARRAY, ARRAY),
+#ifdef CFG_GCM_NIST_VECTORS
+#include "gcmDecrypt128.h"
+#include "gcmDecrypt192.h"
+#include "gcmDecrypt256.h"
+#include "gcmEncryptExtIV128.h"
+#include "gcmEncryptExtIV192.h"
+#include "gcmEncryptExtIV256.h"
+#endif
 };
 
 static void xtest_tee_test_4005(ADBG_Case_t *c)
@@ -2944,6 +2875,14 @@ static const struct xtest_ac_case xtest_ac_cases[] = {
 			  ac_rsassa_vect2, NULL_ARRAY, WITHOUT_SALT),
 	XTEST_AC_RSA_CASE(0, TEE_ALG_RSA_NOPAD, TEE_MODE_DECRYPT,
 			  ac_rsassa_vect2, NULL_ARRAY, WITHOUT_SALT),
+	XTEST_AC_RSA_CASE(0, TEE_ALG_RSA_NOPAD, TEE_MODE_ENCRYPT,
+			  ac_rsassa_vect18, NULL_ARRAY, WITHOUT_SALT),
+	XTEST_AC_RSA_CASE(0, TEE_ALG_RSA_NOPAD, TEE_MODE_DECRYPT,
+			  ac_rsassa_vect18, NULL_ARRAY, WITHOUT_SALT),
+	XTEST_AC_RSA_CASE(0, TEE_ALG_RSA_NOPAD, TEE_MODE_ENCRYPT,
+			  ac_rsassa_vect19, NULL_ARRAY, WITHOUT_SALT),
+	XTEST_AC_RSA_CASE(0, TEE_ALG_RSA_NOPAD, TEE_MODE_DECRYPT,
+			  ac_rsassa_vect19, NULL_ARRAY, WITHOUT_SALT),
 	XTEST_AC_RSA_CASE(0, TEE_ALG_RSASSA_PKCS1_V1_5_SHA1, TEE_MODE_SIGN,
 			  ac_rsassa_vect3, NULL_ARRAY, WITHOUT_SALT),
 	XTEST_AC_RSA_CASE(0, TEE_ALG_RSASSA_PKCS1_V1_5_SHA1, TEE_MODE_VERIFY,
@@ -3701,7 +3640,7 @@ static bool create_key(ADBG_Case_t *c, TEEC_Session *s,
 		return false;
 
 	for (n = 0; n < num_attrs; n++) {
-		uint8_t out[384];
+		uint8_t out[512];
 		size_t out_size;
 
 		out_size = sizeof(out);
@@ -5124,3 +5063,43 @@ static void xtest_tee_test_4011(ADBG_Case_t *c)
 out:
 	TEEC_CloseSession(&s);
 }
+
+
+#ifdef CFG_SYSTEM_PTA
+static void xtest_tee_test_4012(ADBG_Case_t *c)
+{
+	TEEC_Session session = { 0 };
+	uint32_t ret_orig;
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	/* Fortuna PRNG requires seed <= 32 bytes */
+	uint8_t pool_input[32] = {};
+	time_t t;
+	struct tm tm_local;
+
+	t = time(NULL);
+	tm_local = *localtime(&t);
+
+	memcpy((void *)pool_input, (void *)&tm_local,
+	       sizeof(pool_input) < sizeof(tm_local) ?
+	       sizeof(pool_input) : sizeof(tm_local));
+
+
+	op.params[0].tmpref.buffer = pool_input;
+	op.params[0].tmpref.size = sizeof(pool_input);
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
+					 TEEC_NONE,
+					 TEEC_NONE,
+					 TEEC_NONE);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&session, &crypt_user_ta_uuid, NULL,
+					&ret_orig)))
+		return;
+
+	(void)ADBG_EXPECT_TEEC_SUCCESS(c,
+				       TEEC_InvokeCommand(&session,
+					TA_CRYPT_CMD_SEED_RNG_POOL,
+					&op,
+					&ret_orig));
+	TEEC_CloseSession(&session);
+}
+#endif

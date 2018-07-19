@@ -362,4 +362,24 @@
 #define TA_CRYPT_CMD_SETGLOBAL     40
 #define TA_CRYPT_CMD_GETGLOBAL     41
 
+/* If mbedtls is compiled with MBEDTLS_SELF_TEST, run the self tests */
+#define TA_CRYPT_CMD_MBEDTLS_SELF_TESTS		42
+
+/*
+ * in	params[0].memref = cert-chain
+ * in	params[1].memref = trust-anchor-cert
+ */
+#define TA_CRYPT_CMD_MBEDTLS_CHECK_CERT		43
+
+/*
+ * in	params[0].memref = Certificate request in PKCS#10 format
+ * out	params[1].memref = Signed certificate in X.509 format
+ * out	params[2].memref = Certificate chain
+ */
+#define TA_CRYPT_CMD_MBEDTLS_SIGN_CERT		44
+
+/*
+ * system pTA is used for adding entropy to RNG pool */
+#define TA_CRYPT_CMD_SEED_RNG_POOL 45
+
 #endif /*TA_CRYPT_H */

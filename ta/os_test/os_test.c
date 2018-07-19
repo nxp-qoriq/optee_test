@@ -35,6 +35,7 @@
 #include "os_test.h"
 #include "testframework.h"
 #include "test_float_subj.h"
+#include "os_test_lib.h"
 
 enum p_type {
 	P_TYPE_BOOL,
@@ -474,9 +475,12 @@ static TEE_Result test_mem_access_right(uint32_t param_types,
 		goto cleanup_return;
 	}
 
-	l_pts = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, 0, 0, 0);
+	l_pts = TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+				TEE_PARAM_TYPE_MEMREF_INPUT, 0, 0);
 	l_params[0].memref.buffer = buf;
 	l_params[0].memref.size = sizeof(buf);
+	l_params[1].memref.buffer = NULL;
+	l_params[1].memref.size = 0;
 	res = TEE_InvokeTACommand(sess, 0, TA_OS_TEST_CMD_PARAMS_ACCESS,
 				  l_pts, l_params, &ret_orig);
 	if (res != TEE_SUCCESS) {
@@ -845,7 +849,8 @@ TEE_Result ta_entry_params_access_rights(uint32_t param_types, TEE_Param params[
 	TEE_Result res;
 
 	if (param_types !=
-	    TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT, 0, 0, 0))
+	    TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+			    TEE_PARAM_TYPE_MEMREF_INPUT, 0, 0))
 		return TEE_ERROR_GENERIC;
 
 	res = TEE_CheckMemoryAccessRights(TEE_MEMORY_ACCESS_READ |
@@ -860,6 +865,8 @@ TEE_Result ta_entry_params_access_rights(uint32_t param_types, TEE_Param params[
 					  params[0].memref.size);
 	if (res != TEE_ERROR_ACCESS_DENIED)
 		return TEE_ERROR_GENERIC;
+	if (params[1].memref.buffer || params[1].memref.size)
+		return TEE_ERROR_BAD_PARAMETERS;
 
 	return TEE_SUCCESS;
 }
@@ -892,7 +899,9 @@ TEE_Result ta_entry_bad_mem_access(uint32_t param_types, TEE_Param params[4])
 	long stack;
 	long stack_addr = (long)&stack;
 
-	if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT, 0, 0, 0))
+	if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT, 0, 0, 0) &&
+	    param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_VALUE_INPUT,
+					   TEE_PARAM_TYPE_MEMREF_INOUT, 0, 0))
 		return TEE_ERROR_GENERIC;
 
 	switch (params[0].value.a) {
@@ -1038,4 +1047,50 @@ TEE_Result ta_entry_ta2ta_memref_mix(uint32_t param_types, TEE_Param params[4])
 		out[i] = ++inout[i] + in[i];
 
 	return TEE_SUCCESS;
+}
+
+TEE_Result ta_entry_params(uint32_t param_types, TEE_Param params[4])
+{
+	size_t n;
+
+	if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
+					   TEE_PARAM_TYPE_MEMREF_INPUT,
+					   TEE_PARAM_TYPE_MEMREF_OUTPUT,
+					   TEE_PARAM_TYPE_MEMREF_OUTPUT))
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	for (n = 0; n < TEE_NUM_PARAMS; n++)
+		if (!params[n].memref.buffer || !params[n].memref.size)
+			return TEE_ERROR_BAD_PARAMETERS;
+
+	return TEE_SUCCESS;
+}
+
+TEE_Result ta_entry_call_lib(uint32_t param_types,
+			     TEE_Param params[4] __unused)
+{
+	if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+					   TEE_PARAM_TYPE_NONE,
+					   TEE_PARAM_TYPE_NONE,
+					   TEE_PARAM_TYPE_NONE))
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	if (os_test_shlib_add(1, 2) != 3)
+		return TEE_ERROR_GENERIC;
+
+	return TEE_SUCCESS;
+}
+
+TEE_Result ta_entry_call_lib_panic(uint32_t param_types,
+				   TEE_Param params[4] __unused)
+{
+	if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_NONE,
+					   TEE_PARAM_TYPE_NONE,
+					   TEE_PARAM_TYPE_NONE,
+					   TEE_PARAM_TYPE_NONE))
+		return TEE_ERROR_BAD_PARAMETERS;
+
+	os_test_shlib_panic();
+
+	return TEE_ERROR_GENERIC;
 }

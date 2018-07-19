@@ -14,6 +14,7 @@
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -22,6 +23,7 @@
 #include "xtest_test.h"
 #include "xtest_helpers.h"
 #include <signed_hdr.h>
+#include <util.h>
 
 #include <pta_invoke_tests.h>
 #include <ta_crypt.h>
@@ -31,9 +33,17 @@
 #include <ta_sims_test.h>
 #include <ta_concurrent.h>
 #include <sdp_basic.h>
+#ifdef CFG_SECSTOR_TA_MGMT_PTA
+#include <pta_secstor_ta_mgmt.h>
+#endif
+
+#ifndef MIN
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
+#endif
 
 static void xtest_tee_test_1001(ADBG_Case_t *Case_p);
 static void xtest_tee_test_1002(ADBG_Case_t *Case_p);
+static void xtest_tee_test_1003(ADBG_Case_t *Case_p);
 static void xtest_tee_test_1004(ADBG_Case_t *Case_p);
 static void xtest_tee_test_1005(ADBG_Case_t *Case_p);
 static void xtest_tee_test_1006(ADBG_Case_t *Case_p);
@@ -49,9 +59,16 @@ static void xtest_tee_test_1014(ADBG_Case_t *Case_p);
 #endif
 static void xtest_tee_test_1015(ADBG_Case_t *Case_p);
 static void xtest_tee_test_1016(ADBG_Case_t *Case_p);
+static void xtest_tee_test_1017(ADBG_Case_t *Case_p);
+static void xtest_tee_test_1018(ADBG_Case_t *Case_p);
+#if defined(CFG_TA_DYNLINK)
+static void xtest_tee_test_1019(ADBG_Case_t *Case_p);
+#endif
 
 ADBG_CASE_DEFINE(regression, 1001, xtest_tee_test_1001, "Core self tests");
 ADBG_CASE_DEFINE(regression, 1002, xtest_tee_test_1002, "PTA parameters");
+ADBG_CASE_DEFINE(regression, 1003, xtest_tee_test_1003,
+		 "Core internal read/write mutex");
 ADBG_CASE_DEFINE(regression, 1004, xtest_tee_test_1004, "Test User Crypt TA");
 ADBG_CASE_DEFINE(regression, 1005, xtest_tee_test_1005, "Many sessions");
 ADBG_CASE_DEFINE(regression, 1006, xtest_tee_test_1006,
@@ -76,6 +93,14 @@ ADBG_CASE_DEFINE(regression, 1015, xtest_tee_test_1015,
 		"FS hash-tree corner cases");
 ADBG_CASE_DEFINE(regression, 1016, xtest_tee_test_1016,
 		"Test TA to TA transfers (in/out/inout memrefs on the stack)");
+ADBG_CASE_DEFINE(regression, 1017, xtest_tee_test_1017,
+		"Test coalescing memrefs");
+ADBG_CASE_DEFINE(regression, 1018, xtest_tee_test_1018,
+		"Test memref out of bounds");
+#if defined(CFG_TA_DYNLINK)
+ADBG_CASE_DEFINE(regression, 1019, xtest_tee_test_1019,
+		"Test dynamically linked TA");
+#endif
 
 struct xtest_crypto_session {
 	ADBG_Case_t *c;
@@ -324,7 +349,141 @@ out:
 	TEEC_CloseSession(&session);
 }
 
+struct test_1003_arg {
+	uint32_t test_type;
+	size_t repeat;
+	size_t max_before_lockers;
+	size_t max_during_lockers;
+	size_t before_lockers;
+	size_t during_lockers;
+	TEEC_Result res;
+	uint32_t error_orig;
+};
 
+static void *test_1003_thread(void *arg)
+{
+	struct test_1003_arg *a = arg;
+	TEEC_Session session = { 0 };
+	size_t rounds = 64 * 1024;
+	size_t n;
+
+	a->res = xtest_teec_open_session(&session, &pta_invoke_tests_ta_uuid,
+					 NULL, &a->error_orig);
+	if (a->res != TEEC_SUCCESS)
+		return NULL;
+
+	for (n = 0; n < a->repeat; n++) {
+		TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+
+		op.params[0].value.a = a->test_type;
+		op.params[0].value.b = rounds;
+
+		op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INPUT,
+						 TEEC_VALUE_OUTPUT,
+						 TEEC_NONE, TEEC_NONE);
+		a->res = TEEC_InvokeCommand(&session,
+					    PTA_INVOKE_TESTS_CMD_MUTEX,
+					    &op, &a->error_orig);
+		if (a->test_type == PTA_MUTEX_TEST_WRITER &&
+		    op.params[1].value.b != 1) {
+			Do_ADBG_Log("n %zu %" PRIu32, n, op.params[1].value.b);
+			a->res = TEEC_ERROR_BAD_STATE;
+			a->error_orig = 42;
+			break;
+		}
+
+		if (a->test_type == PTA_MUTEX_TEST_READER) {
+			if (op.params[1].value.a > a->max_before_lockers)
+				a->max_before_lockers = op.params[1].value.a;
+
+			if (op.params[1].value.b > a->max_during_lockers)
+				a->max_during_lockers = op.params[1].value.b;
+
+			a->before_lockers += op.params[1].value.a;
+			a->during_lockers += op.params[1].value.b;
+		}
+	}
+	TEEC_CloseSession(&session);
+
+	return NULL;
+}
+
+static void xtest_tee_test_1003(ADBG_Case_t *c)
+{
+	size_t num_threads = 3 * 2;
+	TEEC_Result res;
+	TEEC_Session session = { 0 };
+	uint32_t ret_orig;
+	size_t repeat = 20;
+	pthread_t thr[num_threads];
+	struct test_1003_arg arg[num_threads];
+	size_t max_read_concurrency = 0;
+	size_t max_read_waiters = 0;
+	size_t num_concurrent_read_lockers = 0;
+	size_t num_concurrent_read_waiters = 0;
+	size_t n;
+	size_t nt = num_threads;
+	double mean_read_concurrency;
+	double mean_read_waiters;
+	size_t num_writers = 0;
+	size_t num_readers = 0;
+
+	/* Pseudo TA is optional: warn and nicely exit if not found */
+	res = xtest_teec_open_session(&session, &pta_invoke_tests_ta_uuid, NULL,
+				      &ret_orig);
+	if (res == TEEC_ERROR_ITEM_NOT_FOUND) {
+		Do_ADBG_Log(" - 1003 -   skip test, pseudo TA not found");
+		return;
+	}
+	ADBG_EXPECT_TEEC_SUCCESS(c, res);
+	TEEC_CloseSession(&session);
+
+	memset(arg, 0, sizeof(arg));
+
+	for (n = 0; n < nt; n++) {
+		if (n % 3) {
+			arg[n].test_type = PTA_MUTEX_TEST_READER;
+			num_readers++;
+		} else {
+			arg[n].test_type = PTA_MUTEX_TEST_WRITER;
+			num_writers++;
+		}
+		arg[n].repeat = repeat;
+		if (!ADBG_EXPECT(c, 0, pthread_create(thr + n, NULL,
+						test_1003_thread, arg + n)))
+			nt = n; /* break loop and start cleanup */
+	}
+
+	for (n = 0; n < nt; n++) {
+		ADBG_EXPECT(c, 0, pthread_join(thr[n], NULL));
+		if (!ADBG_EXPECT_TEEC_SUCCESS(c, arg[n].res))
+			Do_ADBG_Log("error origin %" PRIu32,
+				    arg[n].error_orig);
+		if (arg[n].test_type == PTA_MUTEX_TEST_READER) {
+			if (arg[n].max_during_lockers > max_read_concurrency)
+				max_read_concurrency =
+					arg[n].max_during_lockers;
+
+			if (arg[n].max_before_lockers > max_read_waiters)
+				max_read_waiters = arg[n].max_before_lockers;
+
+			num_concurrent_read_lockers += arg[n].during_lockers;
+			num_concurrent_read_waiters += arg[n].before_lockers;
+		}
+	}
+
+	mean_read_concurrency = (double)num_concurrent_read_lockers /
+				(double)(repeat * num_readers);
+	mean_read_waiters = (double)num_concurrent_read_waiters /
+			    (double)(repeat * num_readers);
+
+	Do_ADBG_Log("    Number of parallel threads: %zu (%zu writers and %zu readers)",
+		    num_threads, num_writers, num_readers);
+	Do_ADBG_Log("    Max read concurrency: %zu", max_read_concurrency);
+	Do_ADBG_Log("    Max read waiters: %zu", max_read_waiters);
+	Do_ADBG_Log("    Mean read concurrency: %g", mean_read_concurrency);
+	Do_ADBG_Log("    Mean read waiting: %g", mean_read_waiters);
+}
 
 static void xtest_tee_test_1004(ADBG_Case_t *c)
 {
@@ -345,12 +504,7 @@ static void xtest_tee_test_1004(ADBG_Case_t *c)
 	TEEC_CloseSession(&session);
 }
 
-#ifndef TEEC_ERROR_TARGET_DEAD
-/* To be removed when we have TEEC_ERROR_TARGET_DEAD from tee_client_api.h */
-#define TEEC_ERROR_TARGET_DEAD           0xFFFF3024
-#endif
-
-static void xtest_tee_test_invalid_mem_access(ADBG_Case_t *c, uint32_t n)
+static void xtest_tee_test_invalid_mem_access(ADBG_Case_t *c, unsigned int n)
 {
 	TEEC_Session session = { 0 };
 	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
@@ -364,6 +518,47 @@ static void xtest_tee_test_invalid_mem_access(ADBG_Case_t *c, uint32_t n)
 	op.params[0].value.a = n;
 	op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INPUT, TEEC_NONE, TEEC_NONE,
 					 TEEC_NONE);
+
+	(void)ADBG_EXPECT_TEEC_RESULT(c,
+		TEEC_ERROR_TARGET_DEAD,
+		TEEC_InvokeCommand(&session, TA_OS_TEST_CMD_BAD_MEM_ACCESS, &op,
+				   &ret_orig));
+
+	(void)ADBG_EXPECT_TEEC_RESULT(c,
+	        TEEC_ERROR_TARGET_DEAD,
+	        TEEC_InvokeCommand(&session, TA_OS_TEST_CMD_BAD_MEM_ACCESS, &op,
+					&ret_orig));
+
+	(void)ADBG_EXPECT_TEEC_ERROR_ORIGIN(c, TEEC_ORIGIN_TEE, ret_orig);
+
+	TEEC_CloseSession(&session);
+}
+
+static void xtest_tee_test_invalid_mem_access2(ADBG_Case_t *c, unsigned int n,
+							       size_t size)
+{
+	TEEC_Session session = { 0 };
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	uint32_t ret_orig;
+	TEEC_SharedMemory shm;
+
+	memset(&shm, 0, sizeof(shm));
+	shm.size = size;
+	shm.flags = TEEC_MEM_INPUT | TEEC_MEM_OUTPUT;
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		TEEC_AllocateSharedMemory(&xtest_teec_ctx, &shm)))
+		return;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&session, &os_test_ta_uuid, NULL,
+		                        &ret_orig)))
+		return;
+
+	op.params[0].value.a = (uint32_t)n;
+	op.params[1].memref.parent = &shm;
+	op.params[1].memref.size = size;
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INPUT, TEEC_MEMREF_WHOLE,
+					 TEEC_NONE, TEEC_NONE);
 
 	(void)ADBG_EXPECT_TEEC_RESULT(c,
 		TEEC_ERROR_TARGET_DEAD,
@@ -450,6 +645,7 @@ static void xtest_tee_test_1007(ADBG_Case_t *c)
 	TEEC_CloseSession(&session);
 }
 
+#ifdef CFG_SECSTOR_TA_MGMT_PTA
 #ifndef TA_DIR
 # ifdef __ANDROID__
 #define TA_DIR "/system/lib/optee_armtz"
@@ -458,158 +654,75 @@ static void xtest_tee_test_1007(ADBG_Case_t *c)
 # endif
 #endif
 
-#ifndef TA_TEST_DIR
-# ifdef __ANDROID__
-#  define TA_TEST_DIR "/data/tee/optee_armtz"
-# else
-#  define TA_TEST_DIR "/tmp/optee_armtz"
-# endif
-#endif
-
-static void make_test_ta_dir(void)
+static FILE *open_ta_file(const TEEC_UUID *uuid, const char *mode)
 {
-#ifdef __ANDROID__
-	(void)mkdir("/data/tee", 0755);
-#endif
-	(void)mkdir(TA_TEST_DIR, 0755);
-}
+	char buf[PATH_MAX];
 
-static void uuid_to_full_name(char *buf, size_t blen, const TEEC_UUID *uuid,
-			bool for_write)
-{
-	snprintf(buf, blen,
+	snprintf(buf, sizeof(buf),
 		"%s/%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x.ta",
-		for_write ? TA_TEST_DIR : TA_DIR,
-		uuid->timeLow, uuid->timeMid, uuid->timeHiAndVersion,
+		TA_DIR, uuid->timeLow, uuid->timeMid, uuid->timeHiAndVersion,
 		uuid->clockSeqAndNode[0], uuid->clockSeqAndNode[1],
 		uuid->clockSeqAndNode[2], uuid->clockSeqAndNode[3],
 		uuid->clockSeqAndNode[4], uuid->clockSeqAndNode[5],
 		uuid->clockSeqAndNode[6], uuid->clockSeqAndNode[7]);
-}
 
-static FILE *open_ta_file(const TEEC_UUID *uuid, const char *mode,
-			  bool for_write)
-{
-	char buf[PATH_MAX];
-
-	uuid_to_full_name(buf, sizeof(buf), uuid, for_write);
 	return fopen(buf, mode);
 }
 
-static bool rm_file(const TEEC_UUID *uuid)
-{
-	char buf[PATH_MAX];
-
-	uuid_to_full_name(buf, sizeof(buf), uuid, true);
-	return !unlink(buf);
-}
-
-static bool copy_file(const TEEC_UUID *src_uuid, const TEEC_UUID *dst_uuid)
-{
-	char buf[4 * 1024];
-	FILE *src = open_ta_file(src_uuid, "r", false);
-	FILE *dst = open_ta_file(dst_uuid, "w", true);
-	size_t r;
-	size_t w;
-	bool ret = false;
-
-	if (src && dst) {
-		do {
-			r = fread(buf, 1, sizeof(buf), src);
-			if (!r) {
-				ret = !!feof(src);
-				break;
-			}
-			w = fwrite(buf, 1, r, dst);
-		} while (w == r);
-	}
-
-	if (src)
-		fclose(src);
-	if (dst)
-		fclose(dst);
-	return ret;
-}
-
-static bool corrupt_file(FILE *f, long offs, uint8_t mask)
-{
-	uint8_t b;
-
-	if (fseek(f, offs, SEEK_SET))
-		return false;
-
-	if (fread(&b, 1, 1, f) != 1)
-		return false;
-
-	b ^= mask;
-
-	if (fseek(f, offs, SEEK_SET))
-		return false;
-
-	if (fwrite(&b, 1, 1, f) != 1)
-		return false;
-
-	return true;
-}
-
-static void load_fake_ta(ADBG_Case_t *c)
-{
-	static const TEEC_UUID fake_uuid =  {
-		0x7e0a0900, 0x586b, 0x11e5,
-		{ 0x93, 0x1f, 0x00, 0x02, 0xa5, 0xd5, 0xc5, 0x1b }
-	};
-	TEEC_Session session = { 0 };
-	TEEC_Result res;
-	uint32_t ret_orig;
-	bool r;
-
-	r = copy_file(&create_fail_test_ta_uuid, &fake_uuid);
-
-	if (ADBG_EXPECT_TRUE(c, r)) {
-		res = xtest_teec_open_session(&session, &fake_uuid, NULL,
-					      &ret_orig);
-		if (res == TEEC_SUCCESS)
-			TEEC_CloseSession(&session);
-		ADBG_EXPECT_TEEC_RESULT(c, TEEC_ERROR_SECURITY, res);
-	}
-
-	ADBG_EXPECT_TRUE(c, rm_file(&fake_uuid));
-}
-
-static bool load_corrupt_ta(ADBG_Case_t *c, long offs, uint8_t mask)
+static bool load_corrupt_ta(ADBG_Case_t *c, size_t offs, uint8_t mask)
 {
 	TEEC_Session session = { 0 };
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	TEEC_UUID uuid = PTA_SECSTOR_TA_MGMT_UUID;
 	TEEC_Result res;
 	uint32_t ret_orig;
-	FILE *f;
-	bool r;
+	FILE *f = NULL;
+	bool r = false;
+	uint8_t *buf = NULL;
+	size_t sz;
+	size_t fread_res;
 
-	r = copy_file(&create_fail_test_ta_uuid, &create_fail_test_ta_uuid);
-	if (!ADBG_EXPECT_TRUE(c, r)) {
-		rm_file(&create_fail_test_ta_uuid);
-		return false;
-	}
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&session, &uuid, NULL, &ret_orig)))
+		goto out;
 
-	f = open_ta_file(&create_fail_test_ta_uuid, "r+", true);
-	if (!ADBG_EXPECT_NOT_NULL(c, f)) {
-		rm_file(&create_fail_test_ta_uuid);
-		return false;
-	}
-	r = corrupt_file(f, offs, mask);
+	f = open_ta_file(&create_fail_test_ta_uuid, "rb");
+	if (!ADBG_EXPECT_NOT_NULL(c, f))
+		goto out;
+	if (!ADBG_EXPECT_TRUE(c, !fseek(f, 0, SEEK_END)))
+		goto out;
+	sz = ftell(f);
+	rewind(f);
+
+	buf = malloc(sz);
+	if (!ADBG_EXPECT_NOT_NULL(c, buf))
+		goto out;
+
+	fread_res = fread(buf, 1, sz, f);
+	if (!ADBG_EXPECT_COMPARE_UNSIGNED(c, fread_res, ==, sz))
+		goto out;
+
 	fclose(f);
+	f = NULL;
 
-	if (ADBG_EXPECT_TRUE(c, r)) {
-		res = xtest_teec_open_session(&session,
-					      &create_fail_test_ta_uuid,
-					      NULL, &ret_orig);
-		if (res == TEEC_SUCCESS)
-			TEEC_CloseSession(&session);
-		r &= ADBG_EXPECT_TEEC_RESULT(c, TEEC_ERROR_SECURITY, res);
-	}
+	buf[MIN(offs, sz)] ^= mask;
 
-	r &= ADBG_EXPECT_TRUE(c, rm_file(&create_fail_test_ta_uuid));
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT, TEEC_NONE,
+					 TEEC_NONE, TEEC_NONE);
+	op.params[0].tmpref.buffer = buf;
+	op.params[0].tmpref.size = sz;
+
+	res = TEEC_InvokeCommand(&session, PTA_SECSTOR_TA_MGMT_BOOTSTRAP, &op,
+				 &ret_orig);
+	r = ADBG_EXPECT_TEEC_RESULT(c, TEEC_ERROR_SECURITY, res);
+out:
+	free(buf);
+	if (f)
+		fclose(f);
+	TEEC_CloseSession(&session);
 	return r;
 }
+#endif /*CFG_SECSTOR_TA_MGMT_PTA*/
 
 static void xtest_tee_test_1008(ADBG_Case_t *c)
 {
@@ -676,12 +789,7 @@ static void xtest_tee_test_1008(ADBG_Case_t *c)
 	}
 	Do_ADBG_EndSubCase(c, "Create session fail");
 
-	make_test_ta_dir();
-
-	Do_ADBG_BeginSubCase(c, "Load fake uuid TA");
-	load_fake_ta(c);
-	Do_ADBG_EndSubCase(c, "Load fake uuid TA");
-
+#ifdef CFG_SECSTOR_TA_MGMT_PTA
 	Do_ADBG_BeginSubCase(c, "Load corrupt TA");
 	ADBG_EXPECT_TRUE(c,
 		load_corrupt_ta(c, offsetof(struct shdr, magic), 1));
@@ -702,6 +810,7 @@ static void xtest_tee_test_1008(ADBG_Case_t *c)
 	ADBG_EXPECT_TRUE(c, load_corrupt_ta(c, 3000, 1)); /* payload */
 	ADBG_EXPECT_TRUE(c, load_corrupt_ta(c, 30000, 1)); /* payload */
 	Do_ADBG_EndSubCase(c, "Load corrupt TA");
+#endif /*CFG_SECSTOR_TA_MGMT_PTA*/
 }
 
 static void *cancellation_thread(void *arg)
@@ -775,12 +884,26 @@ static void xtest_tee_test_1009(ADBG_Case_t *c)
 
 static void xtest_tee_test_1010(ADBG_Case_t *c)
 {
-	unsigned n;
+	unsigned int n;
+	unsigned int idx;
+	size_t memref_sz[] = { 1024, 65536 };
 
 	for (n = 1; n <= 5; n++) {
 		Do_ADBG_BeginSubCase(c, "Invalid memory access %u", n);
 		xtest_tee_test_invalid_mem_access(c, n);
 		Do_ADBG_EndSubCase(c, "Invalid memory access %u", n);
+	}
+
+	for (idx = 0; idx < ARRAY_SIZE(memref_sz); idx++) {
+		for (n = 1; n <= 5; n++) {
+			Do_ADBG_BeginSubCase(c,
+				"Invalid memory access %u with %zu bytes memref",
+				n, memref_sz[idx]);
+			xtest_tee_test_invalid_mem_access2(c, n, memref_sz[idx]);
+			Do_ADBG_EndSubCase(c,
+				"Invalid memory access %u with %zu bytes memref",
+				n, memref_sz[idx]);
+		}
 	}
 }
 
@@ -866,7 +989,7 @@ static void xtest_tee_test_1012(ADBG_Case_t *c)
 			TEEC_InvokeCommand(&session1, TA_SIMS_CMD_WRITE, &op,
 					   &ret_orig));
 
-		for (i = 1; i < 1000; i++) {
+		for (i = 1; i < 3; i++) {
 			if (!ADBG_EXPECT_TEEC_SUCCESS(c,
 				xtest_teec_open_session(&session2, &uuid, NULL,
 				                        &ret_orig)))
@@ -1204,3 +1327,144 @@ static void xtest_tee_test_1016(ADBG_Case_t *c)
 
 	TEEC_CloseSession(&session);
 }
+
+static void xtest_tee_test_1017(ADBG_Case_t *c)
+{
+	TEEC_Session session = { 0 };
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	uint32_t ret_orig;
+	TEEC_SharedMemory shm;
+	size_t page_size = 4096;
+
+	memset(&shm, 0, sizeof(shm));
+	shm.size = 8 * page_size;
+	shm.flags = TEEC_MEM_INPUT | TEEC_MEM_OUTPUT;
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		TEEC_AllocateSharedMemory(&xtest_teec_ctx, &shm)))
+		return;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&session, &os_test_ta_uuid, NULL,
+		                        &ret_orig)))
+		goto out;
+
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_PARTIAL_INPUT,
+					 TEEC_MEMREF_PARTIAL_INPUT,
+					 TEEC_MEMREF_PARTIAL_OUTPUT,
+					 TEEC_MEMREF_PARTIAL_OUTPUT);
+
+	/*
+	 * The first two memrefs are supposed to be combined into in
+	 * region and the last two memrefs should have one region each
+	 * when the parameters are mapped for the TA.
+	 */
+	op.params[0].memref.parent = &shm;
+	op.params[0].memref.size = page_size;
+	op.params[0].memref.offset = 0;
+
+	op.params[1].memref.parent = &shm;
+	op.params[1].memref.size = page_size;
+	op.params[1].memref.offset = page_size;
+
+	op.params[2].memref.parent = &shm;
+	op.params[2].memref.size = page_size;
+	op.params[2].memref.offset = 4 * page_size;
+
+	op.params[3].memref.parent = &shm;
+	op.params[3].memref.size = 2 * page_size;
+	op.params[3].memref.offset = 6 * page_size;
+
+	(void)ADBG_EXPECT_TEEC_SUCCESS(c,
+		TEEC_InvokeCommand(&session, TA_OS_TEST_CMD_PARAMS, &op,
+				   &ret_orig));
+
+	TEEC_CloseSession(&session);
+out:
+	TEEC_ReleaseSharedMemory(&shm);
+}
+
+static void xtest_tee_test_1018(ADBG_Case_t *c)
+{
+	TEEC_Session session = { 0 };
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	uint32_t ret_orig;
+	TEEC_SharedMemory shm;
+	size_t page_size = 4096;
+
+	memset(&shm, 0, sizeof(shm));
+	shm.size = 8 * page_size;
+	shm.flags = TEEC_MEM_INPUT | TEEC_MEM_OUTPUT;
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		TEEC_AllocateSharedMemory(&xtest_teec_ctx, &shm)))
+		return;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&session, &os_test_ta_uuid, NULL,
+		                        &ret_orig)))
+		goto out;
+
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_PARTIAL_INPUT,
+					 TEEC_MEMREF_PARTIAL_INPUT,
+					 TEEC_MEMREF_PARTIAL_OUTPUT,
+					 TEEC_MEMREF_PARTIAL_OUTPUT);
+
+	/*
+	 * The first two memrefs are supposed to be combined into in
+	 * region and the last two memrefs should have one region each
+	 * when the parameters are mapped for the TA.
+	 */
+	op.params[0].memref.parent = &shm;
+	op.params[0].memref.size = page_size;
+	op.params[0].memref.offset = 0;
+
+	op.params[1].memref.parent = &shm;
+	op.params[1].memref.size = page_size;
+	op.params[1].memref.offset = page_size;
+
+	op.params[2].memref.parent = &shm;
+	op.params[2].memref.size = page_size;
+	op.params[2].memref.offset = 4 * page_size;
+
+	op.params[3].memref.parent = &shm;
+	op.params[3].memref.size = 3 * page_size;
+	op.params[3].memref.offset = 6 * page_size;
+
+	/*
+	 * Depending on the tee driver we may have different error codes.
+	 * What's most important is that secure world doesn't panic and
+	 * that someone detects an error.
+	 */
+	ADBG_EXPECT_NOT(c, TEE_SUCCESS,
+			TEEC_InvokeCommand(&session, TA_OS_TEST_CMD_PARAMS, &op,
+					   &ret_orig));
+
+	TEEC_CloseSession(&session);
+out:
+	TEEC_ReleaseSharedMemory(&shm);
+}
+
+#if defined(CFG_TA_DYNLINK)
+static void xtest_tee_test_1019(ADBG_Case_t *c)
+{
+	TEEC_Session session = { 0 };
+	uint32_t ret_orig;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&session, &os_test_ta_uuid, NULL,
+		                        &ret_orig)))
+		return;
+
+	(void)ADBG_EXPECT_TEEC_SUCCESS(c,
+		TEEC_InvokeCommand(&session, TA_OS_TEST_CMD_CALL_LIB, NULL,
+				   &ret_orig));
+
+	(void)ADBG_EXPECT_TEEC_RESULT(c,
+		TEEC_ERROR_TARGET_DEAD,
+		TEEC_InvokeCommand(&session, TA_OS_TEST_CMD_CALL_LIB_PANIC,
+				   NULL, &ret_orig));
+
+	(void)ADBG_EXPECT_TEEC_ERROR_ORIGIN(c, TEEC_ORIGIN_TEE, ret_orig);
+
+	TEEC_CloseSession(&session);
+}
+#endif

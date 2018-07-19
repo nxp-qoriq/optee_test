@@ -1,7 +1,7 @@
 LOCAL_PATH := $(call my-dir)
 
 ## include variants like TA_DEV_KIT_DIR
-## and target of BUILD_OPTEE_OS
+## and OPTEE_BIN
 INCLUDE_FOR_BUILD_TA := false
 include $(BUILD_OPTEE_MK)
 INCLUDE_FOR_BUILD_TA :=
@@ -43,15 +43,32 @@ srcs +=	adbg/src/adbg_case.c \
 	regression_6000.c \
 	regression_7000.c \
 	regression_8000.c \
-	regression_9000.c \
+	regression_8100.c \
 	sha_perf.c \
 	xtest_helpers.c \
 	xtest_main.c \
 	xtest_test.c
 
+ifeq ($(CFG_SECSTOR_TA_MGMT_PTA),y)
+srcs += install_ta.c
+endif
+
 ifeq ($(CFG_SECURE_DATA_PATH),y)
 srcs += sdp_basic.c
 endif
+
+define my-embed-file
+$(TARGET_OUT_HEADERS)/$(1).h: $(LOCAL_PATH)/$(2)
+	@echo '  GEN     $$@'
+	@$(LOCAL_PATH)/scripts/file_to_c.py --inf $$< --out $$@ --name $(1)
+
+$(LOCAL_PATH)/host/xtest/regression_8100.c: $(TARGET_OUT_HEADERS)/$(1).h
+endef
+
+$(eval $(call my-embed-file,regression_8100_ca_crt,cert/ca.crt))
+$(eval $(call my-embed-file,regression_8100_mid_crt,cert/mid.crt))
+$(eval $(call my-embed-file,regression_8100_my_crt,cert/my.crt))
+$(eval $(call my-embed-file,regression_8100_my_csr,cert/my.csr))
 
 LOCAL_SRC_FILES := $(patsubst %,host/xtest/%,$(srcs))
 
@@ -67,7 +84,7 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/host/xtest \
 		$(LOCAL_PATH)/ta/os_test/include \
 		$(LOCAL_PATH)/ta/rpc_test/include \
 		$(LOCAL_PATH)/ta/sims/include \
-		$(LOCAL_PATH)/ta/storage/include \
+		$(LOCAL_PATH)/ta/include \
 		$(LOCAL_PATH)/ta/storage_benchmark/include \
 		$(LOCAL_PATH)/ta/sha_perf/include \
 		$(LOCAL_PATH)/ta/aes_perf/include \
@@ -78,11 +95,13 @@ LOCAL_C_INCLUDES += $(LOCAL_PATH)/host/xtest \
 LOCAL_CFLAGS += -include conf.h
 LOCAL_CFLAGS += -pthread
 LOCAL_CFLAGS += -g3
+LOCAL_CFLAGS += -Wno-missing-field-initializers -Wno-format-zero-length
 
-## target BUILD_OPTEE_OS is defined in the common ta build
-## mk file included before, and this BUILD_OPTEE_OS will
-## help to generate the header files under $(TA_DEV_KIT_DIR)/host_include
-LOCAL_ADDITIONAL_DEPENDENCIES := BUILD_OPTEE_OS
+## $(OPTEE_BIN) is the path of tee.bin like
+## out/target/product/hikey/optee/arm-plat-hikey/core/tee.bin
+## it will be generated after build the optee_os with target BUILD_OPTEE_OS
+## which is defined in the common ta build mk file included before,
+LOCAL_ADDITIONAL_DEPENDENCIES := $(OPTEE_BIN)
 
 include $(BUILD_EXECUTABLE)
 

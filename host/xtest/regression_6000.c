@@ -482,6 +482,29 @@ static void test_truncate_file_length(ADBG_Case_t *c, uint32_t storage_id)
 	/* check buffer */
 	(void)ADBG_EXPECT_BUFFER(c, &data_00[5], 5, out, count);
 
+	/* close */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_close(&sess, obj)))
+		goto exit;
+
+	/* open */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_open(&sess,  file_01, sizeof(file_01),
+			TEE_DATA_FLAG_ACCESS_WRITE |
+			TEE_DATA_FLAG_ACCESS_READ |
+			TEE_DATA_FLAG_ACCESS_WRITE_META, &obj, storage_id)))
+		goto exit;
+
+	/* seek */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(
+		    c, fs_seek(&sess, obj, 5, TEE_DATA_SEEK_SET)))
+		goto exit;
+
+	/* verify */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_read(&sess, obj, out, 10, &count)))
+		goto exit;
+
+	/* check buffer */
+	(void)ADBG_EXPECT_BUFFER(c, &data_00[5], 5, out, count);
+
 	/* clean */
 	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_unlink(&sess, obj)))
 		goto exit;
@@ -515,6 +538,31 @@ static void test_extend_file_length(ADBG_Case_t *c, uint32_t storage_id)
 
 	/* extend */
 	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_trunc(&sess, obj, 40)))
+		goto exit;
+
+	/* seek */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(
+		    c, fs_seek(&sess, obj, 30, TEE_DATA_SEEK_SET)))
+		goto exit;
+
+	/* verify */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_read(&sess, obj, out, 10, &count)))
+		goto exit;
+
+	/* check buffer */
+	expect[0] = data_00[30];
+	expect[1] = data_00[31];
+	(void)ADBG_EXPECT_BUFFER(c, &expect[0], 10, out, count);
+
+	/* close */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_close(&sess, obj)))
+		goto exit;
+
+	/* open */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_open(&sess,  file_01, sizeof(file_01),
+			TEE_DATA_FLAG_ACCESS_WRITE |
+			TEE_DATA_FLAG_ACCESS_READ |
+			TEE_DATA_FLAG_ACCESS_WRITE_META, &obj, storage_id)))
 		goto exit;
 
 	/* seek */
@@ -570,6 +618,33 @@ static void test_file_hole(ADBG_Case_t *c, uint32_t storage_id)
 	/* write */
 	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_write(&sess, obj, data_00,
 			sizeof(data_00))))
+		goto exit;
+
+	/* seek */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(
+		    c, fs_seek(&sess, obj, 74, TEE_DATA_SEEK_SET)))
+		goto exit;
+
+	/* verify */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_read(&sess, obj, out, 10, &count)))
+		goto exit;
+
+	/* check buffer */
+	expect[6] = data_00[0];
+	expect[7] = data_00[1];
+	expect[8] = data_00[2];
+	expect[9] = data_00[3];
+	(void)ADBG_EXPECT_BUFFER(c, &expect[0], 10, out, count);
+
+	/* close */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_close(&sess, obj)))
+		goto exit;
+
+	/* open */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_open(&sess,  file_01, sizeof(file_01),
+			TEE_DATA_FLAG_ACCESS_WRITE |
+			TEE_DATA_FLAG_ACCESS_READ |
+			TEE_DATA_FLAG_ACCESS_WRITE_META, &obj, storage_id)))
 		goto exit;
 
 	/* seek */
@@ -1293,7 +1368,7 @@ static void xtest_tee_test_6010_single(ADBG_Case_t *c, uint32_t storage_id)
 
 	ADBG_EXPECT_BUFFER(c,
 		data + sizeof(data) / 2, sizeof(data) / 2,
-		out + sizeof(data) / 2, n);
+		out, n);
 
 seek_write_read_out:
 	ADBG_EXPECT_TEEC_SUCCESS(c, fs_unlink(&sess, o1));
@@ -1815,6 +1890,304 @@ exit:
 
 DEFINE_TEST_MULTIPLE_STORAGE_IDS(xtest_tee_test_6018)
 
+static void xtest_tee_test_6019_single(ADBG_Case_t *c, uint32_t storage_id)
+{
+	TEEC_Session sess;
+	TEEC_Session sess2;
+	uint32_t orig;
+	uint32_t obj;
+	uint32_t obj2;
+	uint8_t out[10] = { 0 };
+	uint32_t count;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&sess, &storage_ta_uuid, NULL, &orig)))
+		return;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		xtest_teec_open_session(&sess2, &storage2_ta_uuid, NULL,
+					&orig)))
+		goto exit3;
+
+	/* TA #1 creates a persistent object */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		fs_create(&sess, file_01, sizeof(file_01),
+			  TEE_DATA_FLAG_ACCESS_WRITE |
+			  TEE_DATA_FLAG_ACCESS_WRITE_META |
+			  TEE_DATA_FLAG_OVERWRITE, 0, data_00,
+			  sizeof(data_00), &obj, storage_id)))
+		goto exit2;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_close(&sess, obj)))
+		goto exit1;
+
+	/* TA #2 creates a persistent object */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		fs_create(&sess2, file_01, sizeof(file_01),
+			  TEE_DATA_FLAG_ACCESS_WRITE |
+			  TEE_DATA_FLAG_ACCESS_WRITE_META |
+			  TEE_DATA_FLAG_OVERWRITE, 0, data_01,
+			  sizeof(data_01), &obj2, storage_id)))
+		goto exit1;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_close(&sess2, obj2)))
+		goto exit;
+
+	/* TA #1 open and read */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		fs_open(&sess, file_01, sizeof(file_01),
+			TEE_DATA_FLAG_ACCESS_READ |
+			TEE_DATA_FLAG_ACCESS_WRITE_META, &obj, storage_id)))
+		goto exit;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_read(&sess, obj, out, 10, &count)))
+		goto exit;
+
+	/* verify */
+	(void)ADBG_EXPECT_BUFFER(c, data_00, 10, out, count);
+
+	/* TA #2 open and read */
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c,
+		fs_open(&sess2, file_01, sizeof(file_01),
+			TEE_DATA_FLAG_ACCESS_READ |
+			TEE_DATA_FLAG_ACCESS_WRITE_META, &obj2, storage_id)))
+		goto exit;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_read(&sess2, obj2, out, 10, &count)))
+		goto exit;
+
+	/* verify */
+	(void)ADBG_EXPECT_BUFFER(c, data_01, 10, out, count);
+
+exit:
+	ADBG_EXPECT_TEEC_SUCCESS(c, fs_unlink(&sess2, obj2));
+exit1:
+	ADBG_EXPECT_TEEC_SUCCESS(c, fs_unlink(&sess, obj));
+exit2:
+	TEEC_CloseSession(&sess2);
+exit3:
+	TEEC_CloseSession(&sess);
+}
+
+DEFINE_TEST_MULTIPLE_STORAGE_IDS(xtest_tee_test_6019)
+
+/*
+ * According to the GP spec V1.1, the object_id in create/open/rename
+ * functions is not allowed to reside in the shared memory.
+ *
+ * The function below replicates fs_open/fs_create/fs_rename but using
+ * specific commands to ask the TA to use the client object ID buffer
+ * from the shared memory when accessing the object through target APIs.
+ * The TA is not expected to use such references and gets killed by the TEE.
+ */
+static TEEC_Result fs_access_with_bad_object_id_ref(TEEC_Session *sess,
+						    uint32_t command,
+						    void *id, uint32_t id_size,
+						    uint32_t flags,
+						    uint32_t attr,
+						    void *data, uint32_t data_size,
+						    uint32_t *obj,
+						    uint32_t storage_id)
+{
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	TEEC_Result res;
+	uint32_t org;
+
+	switch (command) {
+	case TA_STORAGE_CMD_OPEN_ID_IN_SHM:
+		op.params[0].tmpref.buffer = id;
+		op.params[0].tmpref.size = id_size;
+		op.params[1].value.a = flags;
+		op.params[1].value.b = 0;
+		op.params[2].value.a = storage_id;
+
+		op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
+						 TEEC_VALUE_INOUT,
+						 TEEC_VALUE_INPUT,
+						 TEEC_NONE);
+		break;
+	case TA_STORAGE_CMD_CREATE_ID_IN_SHM:
+		op.params[0].tmpref.buffer = id;
+		op.params[0].tmpref.size = id_size;
+		op.params[1].value.a = flags;
+		op.params[1].value.b = 0;
+		op.params[2].value.a = attr;
+		op.params[2].value.b = storage_id;
+		op.params[3].tmpref.buffer = data;
+		op.params[3].tmpref.size = data_size;
+
+		op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
+						 TEEC_VALUE_INOUT,
+						 TEEC_VALUE_INPUT,
+						 TEEC_MEMREF_TEMP_INPUT);
+		break;
+	case TA_STORAGE_CMD_CREATEOVER_ID_IN_SHM:
+		op.params[0].tmpref.buffer = id;
+		op.params[0].tmpref.size = id_size;
+		op.params[1].value.a = storage_id;
+
+		op.paramTypes = TEEC_PARAM_TYPES(TEEC_MEMREF_TEMP_INPUT,
+						 TEEC_VALUE_INPUT,
+						 TEEC_NONE, TEEC_NONE);
+		break;
+	case TA_STORAGE_CMD_RENAME_ID_IN_SHM:
+		op.params[0].value.a = *obj;
+		op.params[1].tmpref.buffer = id;
+		op.params[1].tmpref.size = id_size;
+
+		op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INPUT,
+						 TEEC_MEMREF_TEMP_INPUT,
+						 TEEC_NONE, TEEC_NONE);
+		break;
+	default:
+		return TEE_ERROR_GENERIC;
+	}
+
+	res = TEEC_InvokeCommand(sess, command, &op, &org);
+
+	switch (command) {
+	case TA_STORAGE_CMD_OPEN_ID_IN_SHM:
+	case TA_STORAGE_CMD_CREATE_ID_IN_SHM:
+		if (res == TEEC_SUCCESS)
+			*obj = op.params[1].value.b;
+		break;
+	default:
+		break;
+	}
+
+	return res;
+}
+
+static void xtest_tee_test_6020_single(ADBG_Case_t *c, uint32_t storage_id)
+{
+	TEEC_Result res;
+	TEEC_Session sess;
+	uint32_t orig;
+	uint32_t obj;
+
+	/*
+	 * Invalid open request from the TA (object ID reference in SHM)
+	 */
+	res = xtest_teec_open_session(&sess, &storage_ta_uuid, NULL, &orig);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		return;
+
+	res = fs_create(&sess, file_01, sizeof(file_01),
+				TEE_DATA_FLAG_ACCESS_WRITE |
+				TEE_DATA_FLAG_ACCESS_WRITE_META |
+				TEE_DATA_FLAG_OVERWRITE,
+				0,
+				data_00, sizeof(data_00),
+				&obj,
+				storage_id);
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		goto exit1;
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, fs_close(&sess, obj)))
+		goto exit1;
+
+	res = fs_access_with_bad_object_id_ref(&sess,
+				TA_STORAGE_CMD_OPEN_ID_IN_SHM,
+				file_01, sizeof(file_01),
+				TEE_DATA_FLAG_ACCESS_WRITE |
+				TEE_DATA_FLAG_ACCESS_WRITE_META |
+				TEE_DATA_FLAG_OVERWRITE,
+				0,
+				NULL, 0,
+				&obj,
+				storage_id);
+
+	ADBG_EXPECT_TEEC_RESULT(c, TEE_ERROR_TARGET_DEAD, res);
+
+	/*
+	 * Invalid create-overwrite request from the TA (object ID reference in SHM)
+	 */
+	TEEC_CloseSession(&sess);
+	res = xtest_teec_open_session(&sess, &storage_ta_uuid, NULL, &orig);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		return;
+
+	res = fs_access_with_bad_object_id_ref(&sess,
+				TA_STORAGE_CMD_CREATEOVER_ID_IN_SHM,
+				file_01, sizeof(file_01),
+				0,
+				0,
+				NULL, 0,
+				NULL,
+				storage_id);
+
+	ADBG_EXPECT_TEEC_RESULT(c, TEE_ERROR_TARGET_DEAD, res);
+
+	/*
+	 * Invalid rename request from the TA (object ID reference in SHM)
+	 */
+	TEEC_CloseSession(&sess);
+	res = xtest_teec_open_session(&sess, &storage_ta_uuid, NULL, &orig);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		return;
+
+	res = fs_open(&sess, file_01, sizeof(file_01),
+				TEE_DATA_FLAG_ACCESS_WRITE |
+				TEE_DATA_FLAG_ACCESS_WRITE_META |
+				TEE_DATA_FLAG_OVERWRITE,
+				&obj,
+				storage_id);
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		goto exit1;
+
+	res = fs_access_with_bad_object_id_ref(&sess,
+				TA_STORAGE_CMD_RENAME_ID_IN_SHM,
+				file_01, sizeof(file_01) - 1,
+				0,
+				0,
+				NULL, 0,
+				&obj,
+				0);
+
+	ADBG_EXPECT_TEEC_RESULT(c, TEE_ERROR_TARGET_DEAD, res);
+
+	/*
+	 * Invalid creation request from the TA (object ID reference in SHM)
+	 */
+	TEEC_CloseSession(&sess);
+	res = xtest_teec_open_session(&sess, &storage_ta_uuid, NULL, &orig);
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		return;
+
+	res = fs_open(&sess, file_01, sizeof(file_01),
+				TEE_DATA_FLAG_ACCESS_WRITE |
+				TEE_DATA_FLAG_ACCESS_WRITE_META |
+				TEE_DATA_FLAG_OVERWRITE,
+				&obj,
+				storage_id);
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, res))
+		goto exit1;
+
+	ADBG_EXPECT_TEEC_SUCCESS(c, fs_unlink(&sess, obj));
+
+	res = fs_access_with_bad_object_id_ref(&sess,
+				TA_STORAGE_CMD_CREATE_ID_IN_SHM,
+				file_01, sizeof(file_01),
+				TEE_DATA_FLAG_ACCESS_WRITE |
+				TEE_DATA_FLAG_ACCESS_WRITE_META |
+				TEE_DATA_FLAG_OVERWRITE,
+				0,
+				data_00, sizeof(data_00),
+				&obj,
+				storage_id);
+
+	ADBG_EXPECT_TEEC_RESULT(c, TEE_ERROR_TARGET_DEAD, res);
+
+	return;
+exit1:
+	ADBG_EXPECT_TEEC_SUCCESS(c, fs_unlink(&sess, obj));
+	TEEC_CloseSession(&sess);
+}
+
+DEFINE_TEST_MULTIPLE_STORAGE_IDS(xtest_tee_test_6020)
+
 ADBG_CASE_DEFINE(regression, 6001, xtest_tee_test_6001,
 		 "Test TEE_CreatePersistentObject");
 ADBG_CASE_DEFINE(regression, 6002, xtest_tee_test_6002,
@@ -1851,3 +2224,6 @@ ADBG_CASE_DEFINE(regression, 6016, xtest_tee_test_6016, "Storage concurency");
 ADBG_CASE_DEFINE(regression, 6017, xtest_tee_test_6017,
 		 "Test Persistent objects info");
 ADBG_CASE_DEFINE(regression, 6018, xtest_tee_test_6018, "Large object");
+ADBG_CASE_DEFINE(regression, 6019, xtest_tee_test_6019, "Storage independence");
+ADBG_CASE_DEFINE(regression, 6020, xtest_tee_test_6020,
+		 "Object IDs in SHM (negative)");
